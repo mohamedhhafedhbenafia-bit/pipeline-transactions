@@ -62,7 +62,7 @@ Prérequis : Python ≥ 3.10, Docker Desktop.
 # 1. Environnement Python
 python -m venv .venv
 .venv\Scripts\activate            # Windows   (Linux/macOS : source .venv/bin/activate)
-pip install -e ".[dev]"
+pip install -e ".[dev,dashboard]"
 
 # 2. Services : PostgreSQL (port 5433) + S3 SeaweedFS (port 8333)
 docker compose up -d --wait postgres s3
@@ -80,7 +80,12 @@ set TXP_REQUIRE_SERVICES=1 && pytest tests/integration   # (bash : TXP_REQUIRE_S
 set TXP_E2E=1 && pytest tests/e2e
 ```
 
-> Sous Windows, si les accents s'affichent mal : `set PYTHONIOENCODING=utf-8`.
+> **Windows :**
+> - si les accents s'affichent mal : `set PYTHONIOENCODING=utf-8` ;
+> - si le projet est dans un dossier au chemin long (ex. Bureau\M2 …), `pip install`
+>   échoue (limite de 260 caractères). Créer alors le venv dans un chemin court :
+>   `python -m venv C:\Users\<vous>\.venvs\txpipeline` puis
+>   `C:\Users\<vous>\.venvs\txpipeline\Scripts\activate`.
 
 ### Commandes de la CLI
 
