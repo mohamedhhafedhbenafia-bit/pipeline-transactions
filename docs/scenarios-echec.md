@@ -11,7 +11,7 @@ dans `docs/captures/` et les référencer dans ce fichier.
 |---|---|---|---|
 | A. Bug de génération | `inject_bug = generation` | job *Lint + tests unitaires* | `InvalidCsvError: transactions_2026-01-01.csv, ligne 4 : montant invalide '7500,50'` |
 | B. Bug de traitement (seuil) | `inject_bug = processing` | job *Lint + tests unitaires* | `test_flag_threshold_is_strict[5000.00-False]` et `test_process_flags_expected_transactions` (T002 flaggée à tort) |
-| C. Bug de traitement (agrégat) | `inject_bug = aggregation` | job *Lint + tests unitaires* | `test_sum_received_by_iban`, `test_totals_are_consistent` |
+| C. Bug de traitement (agrégat) | `inject_bug = aggregation` | job *Lint + tests unitaires* | `test_sum_received_by_iban` (FR3, qui ne reçoit rien, apparaît) |
 | D. Panne d'insertion récupérée | `fail_insert_times = 2` | rien : ✅ vert | logs « tentative 1/3 échouée … réussi à la tentative 3/3 » |
 | E. Panne d'insertion définitive | `fail_insert_times = 5` | étape *5. Traitement* | `échec définitif après 3 tentatives`, code retour 1 |
 | F. Panne S3 récupérée (niveau 2) | `fail_download_times = 2` | rien : ✅ vert | logs « téléchargement … réussi à la tentative 3/3 » |
