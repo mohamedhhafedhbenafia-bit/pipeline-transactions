@@ -21,16 +21,9 @@ Alternative sans bouton : créer une branche, lancer `python scripts/inject_bug.
 processing`, committer et pousser. La CI échoue sur cette branche. Pour annuler :
 `git checkout -- src/`.
 
-## Captures à faire
-
-Pour chaque scénario, 2 captures suffisent :
-
-1. la liste des runs (croix rouge ❌ vs coche verte ✅) ;
-2. le détail de l'étape en échec avec le message d'erreur.
-
-Pour les scénarios D et F, capturer les lignes `WARNING … tentative x/3 échouée` puis
-`réussi à la tentative 3/3` dans l'étape *5. Traitement*, et l'étape *7. Vérification
-des données en base* verte : la preuve qu'il n'y a pas de doublon après les retries.
+Le sujet (Q6) demande **un** scénario d'échec : le scénario A est capturé ci-dessous.
+Le scénario D illustre en plus le retry de Q7. Les autres restent disponibles pour une
+démonstration.
 
 ## Reproduire en local (sans GitHub)
 
@@ -54,4 +47,25 @@ TXP_E2E=1 pytest tests/e2e                       # -> données exactes, aucun do
 
 ## Captures
 
-<!-- Ajouter ici les images, par ex. : ![Scénario A](captures/A-generation.png) -->
+### Scénario A — bug de génération (Q6) : la pipeline échoue ❌
+
+Run CI lancé avec `inject_bug = generation` : un montant est écrit `7500,50` (virgule)
+au lieu de `7500.50`. Le job *Lint + tests unitaires* échoue, le job *Pipeline
+complète + tests d'intégration* est sauté et la CD n'est pas déclenchée : aucune
+donnée corrompue n'atteint la base ni la production.
+
+![Scénario A — résumé du run en échec](captures/A-resume.png)
+
+Détail de l'étape *Tests unitaires* : le chargeur rejette le fichier
+(`ligne 4 : montant invalide '7500,50'`), `4 failed, 18 passed, 6 errors`, code retour 1.
+
+![Scénario A — message d'erreur](captures/A-generation.png)
+
+### Scénario D — panne d'insertion récupérée par le retry (Q7) : la pipeline réussit ✅
+
+Run CI lancé avec `fail_insert_times = 2` : chaque fichier voit son insertion échouer
+deux fois (après une insertion partielle), puis réussir à la 3ᵉ tentative. Les deux
+jobs sont verts, y compris l'étape *7. Vérification des données en base* : les
+retries n'ont laissé ni donnée partielle ni doublon.
+
+![Scénario D — run vert malgré les pannes d'insertion](captures/D-resume.png)

@@ -156,9 +156,12 @@ calculées à la main dans `tests/expected.py` (nombre de fichiers et de lignes,
 total, sommes par IBAN/banque, reçus, transactions flaggées). Utilisé par
 `tests/integration` (schéma isolé) et `tests/e2e` (base réelle après la CLI).
 
-**Q6 — Scénarios d'échec** : voir [docs/scenarios-echec.md](docs/scenarios-echec.md).
-Lancer le workflow CI manuellement avec `inject_bug = generation | processing |
-aggregation` et faire les captures.
+**Q6 — Scénarios d'échec** : voir [docs/scenarios-echec.md](docs/scenarios-echec.md)
+(captures incluses). Le workflow CI se lance manuellement avec `inject_bug = generation |
+processing | aggregation` : avec un bug de génération, les tests unitaires échouent et
+la suite de la pipeline (intégration, CD) n'est pas exécutée.
+
+![Scénario A — la pipeline échoue sur un bug de génération](docs/captures/A-resume.png)
 
 **Q7 — Panne d'insertion + retry** : `FAIL_INSERT_TIMES=N` fait échouer N fois
 l'insertion **de chaque fichier**, *après* l'insertion partielle des transactions.
