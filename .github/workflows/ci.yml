@@ -1,0 +1,109 @@
+# Intégration continue : qualité + tests unitaires, puis pipeline complète sur de vrais
+# services (PostgreSQL + S3 SeaweedFS) et vérification de la base.
+#
+# Lancement manuel (onglet Actions > CI > Run workflow) pour les scénarios d'échec :
+#   - inject_bug        : introduit un bug (Q6)
+#   - fail_insert_times : nombre de pannes d'insertion simulées par fichier (Q7)
+#   - fail_download_times : nombre de pannes de téléchargement S3 simulées (niveau 2)
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      inject_bug:
+        description: "Bug à injecter (Q6)"
+        type: choice
+        options: [none, generation, processing, aggregation]
+        default: none
+      fail_insert_times:
+        description: "Pannes d'insertion simulées par fichier (3 tentatives max)"
+        type: number
+        default: 0
+      fail_download_times:
+        description: "Pannes de téléchargement S3 simulées par fichier (3 tentatives max)"
+        type: number
+        default: 0
+
+env:
+  PYTHON_VERSION: "3.12"
+  INJECT_BUG: ${{ inputs.inject_bug || 'none' }}
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  quality:
+    name: Lint + tests unitaires
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Injection de bug (scénario d'échec)
+        if: env.INJECT_BUG != 'none'
+        run: python scripts/inject_bug.py "$INJECT_BUG"
+      - name: Lint (ruff)
+        run: ruff check src tests scripts dashboard
+      - name: Tests unitaires
+        run: pytest tests/unit -v
+
+  pipeline:
+    name: Pipeline complète + tests d'intégration
+    needs: quality
+    runs-on: ubuntu-latest
+    env:
+      TXP_REQUIRE_SERVICES: "1"
+      RETRY_BASE_DELAY: "0.5"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Injection de bug (scénario d'échec)
+        if: env.INJECT_BUG != 'none'
+        run: python scripts/inject_bug.py "$INJECT_BUG"
+
+      - name: 1. Démarrage PostgreSQL + S3 local (SeaweedFS)
+        run: docker compose up -d --wait postgres s3
+
+      - name: 2. Génération des CSV
+        run: python -m txpipeline generate
+
+      - name: 3. Dépôt des CSV dans le S3
+        run: python -m txpipeline upload
+
+      - name: 4. Création du schéma
+        run: python -m txpipeline init-db
+
+      - name: 5. Traitement S3 -> PostgreSQL (avec retry)
+        env:
+          FAIL_INSERT_TIMES: ${{ inputs.fail_insert_times || 0 }}
+          FAIL_DOWNLOAD_TIMES: ${{ inputs.fail_download_times || 0 }}
+        run: python -m txpipeline run --source s3
+
+      - name: 6. Rejeu (anti-doublon) — aucun fichier ne doit être retraité
+        run: |
+          python -m txpipeline run --source s3 2>&1 | tee replay.log
+          grep -q "0 traité(s), 3 ignoré(s)" replay.log
+
+      - name: 7. Vérification des données en base (e2e)
+        env:
+          TXP_E2E: "1"
+        run: pytest tests/e2e -v
+
+      - name: 8. Tests d'intégration (retry, idempotence, S3)
+        run: pytest tests/integration -v
+
+      - name: Logs des services en cas d'échec
+        if: failure()
+        run: docker compose logs --tail=100
+
+      - name: Arrêt des services
+        if: always()
+        run: docker compose down -v

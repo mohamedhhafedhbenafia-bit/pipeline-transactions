@@ -1,0 +1,86 @@
+# Infrastructure de la pipeline.
+#
+#   docker compose up -d --wait postgres s3            -> services pour la CI / le dev
+#   docker compose --profile prod up -d --build --wait  -> + worker planifié + dashboard
+#
+name: txpipeline
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-pipeline}:${POSTGRES_PASSWORD:-pipeline}@postgres:5432/${POSTGRES_DB:-transactions}
+  S3_ENDPOINT_URL: http://s3:8333
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-pipeline}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-pipeline-secret}
+  S3_BUCKET: ${S3_BUCKET:-transactions}
+  S3_PREFIX: ${S3_PREFIX:-incoming/}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pipeline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pipeline}
+      POSTGRES_DB: ${POSTGRES_DB:-transactions}
+    ports: ["${PG_PORT:-5433}:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # S3 local auto-hébergé : SeaweedFS (API compatible S3). Remplaçable par Garage,
+  # RustFS... sans toucher au code Python : seul S3_ENDPOINT_URL change.
+  # Les identifiants S3 sont générés au démarrage à partir des variables d'environnement.
+  s3:
+    image: chrislusf/seaweedfs:4.50
+    entrypoint: ["/bin/sh", "/deploy/seaweedfs-entrypoint.sh"]
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-pipeline}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-pipeline-secret}
+    ports: ["${S3_PORT:-8333}:8333"]
+    volumes:
+      - s3data:/data
+      - ./deploy/seaweedfs-entrypoint.sh:/deploy/seaweedfs-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    restart: unless-stopped
+
+  # Niveau 3 — worker : relance la pipeline toutes les SCHEDULE_INTERVAL secondes.
+  worker:
+    profiles: [prod]
+    image: ${APP_IMAGE:-txpipeline:local}
+    build: .
+    command: ["python", "-m", "txpipeline", "schedule", "--source", "s3",
+              "--interval", "${SCHEDULE_INTERVAL:-30}"]
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+      s3: { condition: service_healthy }
+    restart: unless-stopped
+
+  # Dashboard connecté à la base (Streamlit).
+  dashboard:
+    profiles: [prod]
+    image: ${APP_IMAGE:-txpipeline:local}
+    pull_policy: never   # même image que le worker (construite/tirée par le worker)
+    command: ["streamlit", "run", "dashboard/app.py", "--server.port=8501",
+              "--server.address=0.0.0.0", "--server.headless=true"]
+    environment: *app-env
+    ports: ["${DASHBOARD_PORT:-8501}:8501"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  s3data:

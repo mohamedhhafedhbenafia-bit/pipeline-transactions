@@ -1,0 +1,122 @@
+# Niveau 3 — Déploiement continu.
+#
+# 1. Construit l'image Docker et la publie sur GitHub Container Registry (ghcr.io).
+# 2. Déploie la stack de production (S3 + PostgreSQL + worker planifié + dashboard)
+#    sur le runner et fait un smoke test : un CSV déposé dans le S3 doit être traité
+#    automatiquement par le worker.
+# 3. Si les secrets DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY sont définis, déploie la
+#    même stack sur une machine virtuelle via SSH.
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build & push de l'image
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ghcr.io/${{ github.repository_owner }}/pipeline-transactions:latest
+
+  smoke-test:
+    name: Déploiement de la stack + smoke test
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      APP_IMAGE: ${{ needs.build.outputs.image }}
+      SCHEDULE_INTERVAL: "5"
+      TXP_E2E: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Démarrage de la stack de production
+        run: |
+          docker compose --profile prod pull worker
+          docker compose --profile prod up -d --no-build --wait
+      - name: Dépôt de nouveaux fichiers dans le S3
+        run: python -m txpipeline generate && python -m txpipeline upload
+      - name: Le worker planifié doit traiter les fichiers tout seul
+        run: |
+          for i in $(seq 1 30); do
+            if pytest tests/e2e -q; then exit 0; fi
+            sleep 3
+          done
+          docker compose --profile prod logs worker
+          exit 1
+      - name: Le dashboard répond
+        run: curl -fsS http://localhost:8501/_stcore/health
+      - if: always()
+        run: docker compose --profile prod down -v
+
+  deploy-vm:
+    name: Déploiement sur la VM
+    needs: [build, smoke-test]
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      APP_IMAGE: ${{ needs.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vérification de la configuration
+        id: check
+        run: |
+          if [ -z "$DEPLOY_HOST" ]; then
+            echo "::notice::Secrets DEPLOY_* absents : déploiement VM ignoré (voir docs/deploiement.md)"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Déploiement via SSH
+        if: steps.check.outputs.enabled == 'true'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          SSH="ssh -i ~/.ssh/id_deploy $DEPLOY_USER@$DEPLOY_HOST"
+          $SSH "mkdir -p ~/txpipeline/deploy"
+          scp -i ~/.ssh/id_deploy docker-compose.yml "$DEPLOY_USER@$DEPLOY_HOST:~/txpipeline/"
+          scp -i ~/.ssh/id_deploy deploy/seaweedfs-entrypoint.sh \
+            "$DEPLOY_USER@$DEPLOY_HOST:~/txpipeline/deploy/"
+          $SSH "cd ~/txpipeline && \
+            echo '$GHCR_TOKEN' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin && \
+            export APP_IMAGE='$APP_IMAGE' && \
+            docker compose --profile prod pull worker && \
+            docker compose --profile prod up -d --no-build --wait"

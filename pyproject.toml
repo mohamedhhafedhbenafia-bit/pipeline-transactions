@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "txpipeline"
+version = "1.0.0"
+description = "Pipeline data de transactions financières : CSV -> S3 -> traitement -> PostgreSQL -> dashboard"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "psycopg[binary]>=3.1,<4",
+    "boto3>=1.34,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.6"]
+dashboard = ["streamlit>=1.46", "pandas>=2.0"]
+
+[project.scripts]
+txpipeline = "txpipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+txpipeline = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+markers = [
+    "integration: tests nécessitant PostgreSQL et le S3 local (docker compose up)",
+    "e2e: vérifie l'état de la base après une exécution réelle de la pipeline",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
